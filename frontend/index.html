@@ -1,0 +1,33 @@
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ESG Quant Scanner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              'brand-primary': '#003366',
+              'brand-secondary': '#4db8ff',
+              'brand-accent': '#ffaa00',
+              'neutral-900': '#1a202c',
+              'neutral-800': '#2d3748',
+              'neutral-700': '#4a5568',
+              'neutral-200': '#e2e8f0',
+              'neutral-100': '#f7fafc',
+            },
+          },
+        },
+      }
+    </script>
+  
+</head>
+  <body class="bg-neutral-900 text-neutral-100">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
