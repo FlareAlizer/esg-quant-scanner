@@ -1,13 +1,23 @@
-"""Monte Carlo simulation of portfolio value under geometric Brownian motion."""
+"""Monte Carlo simulation of portfolio value under geometric Brownian motion.
+
+The portfolio is simulated as one process with drift w @ mu and volatility
+sqrt(w' Sigma w). For assets that follow correlated GBMs this is exactly the
+value of a portfolio rebalanced back to the weights w at every step, so no
+per-asset paths (and no Cholesky factor) are needed.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from typing import Any, Dict
+from dataclasses import asdict, dataclass
+from typing import Any
 
 import numpy as np
 
 from config import settings
+
+# Paths per batch. Keeps memory flat: 2000 paths x 2520 steps is about 40 MB
+# per array, whatever --simulations is.
+_BATCH = 2000
 
 
 @dataclass
@@ -25,12 +35,12 @@ class SimulationResult:
     prob_above_target: float  # share of paths beating the target
 
     expected_max_drawdown: float  # mean max drawdown across paths
-    worst_max_drawdown: float     # worst 5% of scenarios
+    worst_max_drawdown: float     # 5th percentile of max drawdown
 
     sharpe: float
     sortino: float
 
-    def as_dict(self) -> Dict[str, Any]:
+    def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -43,15 +53,24 @@ def run_simulation(
     risk_free: float | None = None,
     seed: int | None = None,
 ) -> SimulationResult:
-    """Run `n_simulations` paths over `years`.
+    """Run `n_simulations` daily paths over `years`.
 
-    mu_annual and vol_annual are portfolio-level annual figures (0.14 = 14%).
+    mu_annual is the arithmetic drift of the portfolio (the mu of
+    dS/S = mu dt + sigma dW), as produced by risk_calculator; vol_annual is
+    sigma. Log value then grows at mu - sigma^2/2 per year, so the median CAGR
+    is exp(mu - sigma^2/2) - 1 and sits below mu: that gap is the volatility
+    drag.
+
+    target_cagr and risk_free are effective annual rates (0.04 = 4% a year).
     target_cagr is the success threshold for the probability metric.
+    seed=None takes RANDOM_SEED from the settings.
     """
     if vol_annual <= 0:
         raise ValueError("vol_annual должна быть строго положительной")
     if years < 1:
         raise ValueError("years должен быть >= 1")
+    if n_simulations < 1:
+        raise ValueError("n_simulations должен быть >= 1")
 
     risk_free = settings.risk_free_rate if risk_free is None else risk_free
     seed = settings.random_seed if seed is None else seed
@@ -59,41 +78,47 @@ def run_simulation(
     steps_per_year = settings.trading_days
     total_steps = years * steps_per_year
     dt = 1.0 / steps_per_year
+    step_drift = (mu_annual - 0.5 * vol_annual**2) * dt
+    step_vol = vol_annual * np.sqrt(dt)
 
     # Generator instead of np.random.*, so we don't touch numpy's global state.
     rng = np.random.default_rng(seed)
 
-    # Work in logs: more stable than multiplying 2520 factors, and one cumsum
-    # gives the whole path.
-    z = rng.standard_normal((total_steps, n_simulations))
-    log_increments = (mu_annual - 0.5 * vol_annual**2) * dt + vol_annual * np.sqrt(dt) * z
+    final_log = np.empty(n_simulations)
+    max_drawdown = np.empty(n_simulations)
+    yearly_returns = np.empty((years, n_simulations))
 
-    # Start at 1.0 (normalised capital), then accumulate log increments.
-    log_paths = np.vstack([np.zeros((1, n_simulations)), np.cumsum(log_increments, axis=0)])
-    price_paths = np.exp(log_paths)  # shape: (total_steps + 1, n_simulations)
+    for start in range(0, n_simulations, _BATCH):
+        stop = min(start + _BATCH, n_simulations)
 
-    final_values = price_paths[-1]
-    cagr = final_values ** (1.0 / years) - 1.0
+        # Work in logs: one cumsum gives the whole path, and the scheme is exact
+        # for GBM at any step size. Capital starts at 1.0, i.e. log value 0.
+        log_paths = step_drift + step_vol * rng.standard_normal((total_steps, stop - start))
+        np.cumsum(log_paths, axis=0, out=log_paths)
 
-    prob_above_target = float(np.mean(cagr > target_cagr))
+        final_log[start:stop] = log_paths[-1]
 
-    running_max = np.maximum.accumulate(price_paths, axis=0)
-    drawdowns = price_paths / running_max - 1.0  # <= 0 by construction
-    max_dd_per_path = drawdowns.min(axis=0)
+        # Running peak, counting the starting capital as the first peak.
+        peak = np.maximum(np.maximum.accumulate(log_paths, axis=0), 0.0)
+        max_drawdown[start:stop] = np.expm1(log_paths - peak).min(axis=0)  # <= 0
+
+        year_end = log_paths[steps_per_year - 1 :: steps_per_year]  # (years, batch)
+        year_start = np.vstack([np.zeros((1, stop - start)), year_end[:-1]])
+        yearly_returns[:, start:stop] = np.expm1(year_end - year_start)
+
+    cagr = np.expm1(final_log / years)
 
     # Sharpe straight from the portfolio parameters: the simulation adds no
-    # information here, and averaging across paths biases the estimate.
-    sharpe = (mu_annual - risk_free) / vol_annual
+    # information here, and averaging across paths biases the estimate. The
+    # drift is a continuously compounded rate, so the risk-free rate is put on
+    # the same footing first.
+    sharpe = (mu_annual - np.log1p(risk_free)) / vol_annual
 
-    # Sortino needs downside deviation, so we slice each path every 252 steps to
-    # get realised annual returns.
-    yearly_slices = price_paths[::steps_per_year]           # (years + 1, n_sim)
-    yearly_returns = yearly_slices[1:] / yearly_slices[:-1] - 1.0
+    # Sortino on simulated calendar-year returns with the risk-free rate as the
+    # minimum acceptable return. Downside deviation divides by all observations
+    # but sums only the shortfalls (Sortino & Price, 1994).
     excess = yearly_returns - risk_free
-    downside = np.minimum(excess, 0.0)
-    # Divide by all observations but sum only the negative ones. That is the
-    # definition of downside deviation (Sortino, 1994).
-    downside_dev = float(np.sqrt(np.mean(downside**2)))
+    downside_dev = float(np.sqrt(np.mean(np.minimum(excess, 0.0) ** 2)))
     sortino = float(np.mean(excess) / downside_dev) if downside_dev > 1e-9 else float("inf")
 
     return SimulationResult(
@@ -103,9 +128,9 @@ def run_simulation(
         median_cagr=float(np.median(cagr)),
         p05_cagr=float(np.percentile(cagr, 5)),
         p95_cagr=float(np.percentile(cagr, 95)),
-        prob_above_target=prob_above_target,
-        expected_max_drawdown=float(np.mean(max_dd_per_path)),
-        worst_max_drawdown=float(np.percentile(max_dd_per_path, 5)),
+        prob_above_target=float(np.mean(cagr > target_cagr)),
+        expected_max_drawdown=float(np.mean(max_drawdown)),
+        worst_max_drawdown=float(np.percentile(max_drawdown, 5)),
         sharpe=float(sharpe),
         sortino=sortino,
     )

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict
 
 import matplotlib
 
@@ -16,9 +15,10 @@ import numpy as np  # noqa: E402
 logger = logging.getLogger(__name__)
 
 _BACKGROUND = "#1e1e1e"
+_MIN_SLICE_PCT = 1.5
 
 
-def draw_text_pie_chart(weights: Dict[str, float], title: str = "Allocation") -> None:
+def draw_text_pie_chart(weights: dict[str, float], title: str = "Allocation") -> None:
     """Horizontal bars in the console, for CI and SSH runs where nobody opens a PNG."""
     if not weights:
         print("⚠️  Нет весов для отображения.")
@@ -29,6 +29,8 @@ def draw_text_pie_chart(weights: Dict[str, float], title: str = "Allocation") ->
 
     bar_width = 40
     shades = ["█", "▓", "▒", "░"]
+    # Wide enough for the longest ticker (BHARTIARTL.NS and the like).
+    name_width = max(len(ticker) for ticker in weights)
 
     for i, (ticker, pct) in enumerate(sorted(weights.items(), key=lambda kv: kv[1], reverse=True)):
         if pct < 0.1:
@@ -36,13 +38,13 @@ def draw_text_pie_chart(weights: Dict[str, float], title: str = "Allocation") ->
         # keep a 0.3% position visible
         length = max(1, int(pct / 100 * bar_width))
         bar = shades[i % len(shades)] * length
-        print(f" {ticker:<9} |{bar:<{bar_width}}| {pct:5.1f}%")
+        print(f" {ticker:<{name_width}} |{bar:<{bar_width}}| {pct:5.1f}%")
 
     print("=" * 62)
 
 
 def save_portfolio_chart(
-    weights: Dict[str, float],
+    weights: dict[str, float],
     filename: str | Path = "portfolio.png",
     title: str = "Portfolio Allocation",
     dpi: int = 200,
@@ -52,6 +54,12 @@ def save_portfolio_chart(
     if not items:
         logger.warning("Нет данных для графика")
         return None
+
+    # Slices this thin have labels that overlap into mush. Fold them into one.
+    small = [(k, v) for k, v in items if v < _MIN_SLICE_PCT]
+    if len(small) > 1:
+        items = [kv for kv in items if kv[1] >= _MIN_SLICE_PCT]
+        items.append((f"прочие ({len(small)})", sum(v for _, v in small)))
 
     labels = [k for k, _ in items]
     sizes = [v for _, v in items]

@@ -13,11 +13,9 @@ openai>=1.30
 ddgs>=9.0
 python-dotenv>=1.0
 
+# HTTP API для фронтенда
+fastapi>=0.115
+uvicorn>=0.30
+
 # Визуализация
 matplotlib>=3.8
-
-# Опционально. Ни один модуль проекта пока их не импортирует: backend/black_litterman.py
-# считает GQV-взгляды на numpy/scipy и до самой оптимизации Black-Litterman не доходит.
-# Оставлены как задел; для запуска пайплайна ставить не обязательно.
-PyPortfolioOpt>=1.5.5
-plotly>=5.20

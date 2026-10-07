@@ -6,7 +6,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import List
+from typing import Any
 
 import company_scorer
 import config
@@ -16,7 +16,7 @@ import portfolio_optimizer
 import visualizer
 
 # Default universe. Override with --tickers or --tickers-file.
-DEFAULT_TICKERS: List[str] = [
+DEFAULT_TICKERS: list[str] = [
     "SMH", "PAVE", "VHT",
     "SHY", "IEI",
     "BYDDY", "CAVA", "LULU", "AMZN",
@@ -63,7 +63,7 @@ def setup_logging(verbose: bool) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-def load_tickers(args: argparse.Namespace) -> List[str]:
+def load_tickers(args: argparse.Namespace) -> list[str]:
     """Tickers from argv, a file, or the default universe."""
     if args.tickers:
         return [t.strip().upper() for t in args.tickers if t.strip()]
@@ -82,84 +82,79 @@ def load_tickers(args: argparse.Namespace) -> List[str]:
     return list(DEFAULT_TICKERS)
 
 
-def score_universe(tickers: List[str]) -> List[str]:
+def score_universe(tickers: list[str]) -> list[str]:
     """Score everything and return what worked. One bad ticker shouldn't kill the run."""
     log = logging.getLogger("pipeline")
-    valid: List[str] = []
+    valid: list[str] = []
 
     print(f"\n🧐 ШАГ 1: скоринг PARKS ({len(tickers)} активов)")
     print("=" * 62)
 
     for ticker in tickers:
         try:
-            data = data_fetcher.fetch_company_data(ticker)
-            if not data:
-                log.warning("Нет данных для %s — пропуск", ticker)
-                continue
-
-            score = company_scorer.score_company(ticker, data)
-            portfolio_optimizer.preload_score_cache(ticker, score)
-            valid.append(ticker)
-
-            coverage = score["data_coverage"]
-            flag = "" if coverage >= 0.5 else "  ⚠️ мало данных"
-            print(
-                f"  {ticker:<14} {score['total_score']:5.2f}/10  "
-                f"[покрытие {coverage:.0%}]  {score['bucket']}{flag}"
-            )
-        except Exception as exc:
+            score = company_scorer.score_company(ticker, data_fetcher.fetch_company_data(ticker))
+        except Exception as exc:  # noqa: BLE001  whatever a data source throws, move on
             log.error("Ошибка обработки %s: %s", ticker, exc)
+            continue
+
+        portfolio_optimizer.preload_score_cache(ticker, score)
+        valid.append(ticker)
+
+        total, coverage = score["total_score"], score["data_coverage"]
+        shown = f"{total:5.2f}/10" if total is not None else "  н/д   "
+        flag = "" if coverage >= 0.5 else "  ⚠️ мало данных"
+        print(f"  {ticker:<14} {shown}  [покрытие {coverage:.0%}]  {score['bucket']}{flag}")
 
     return valid
+
+
+def build_portfolio(tickers: list[str], args: argparse.Namespace) -> dict[str, Any]:
+    """Run the optimiser picked by --objective. Weight bounds are never relaxed."""
+    bounds = {"max_weight": args.max_weight, "min_weight": args.min_weight}
+
+    if args.objective == "max-score":
+        return portfolio_optimizer.optimize_by_score(
+            tickers, volatility_threshold=args.max_volatility, **bounds
+        )
+
+    result = portfolio_optimizer.optimize_mean_variance(tickers, target_return=args.target_return, **bounds)
+
+    # The target is out of reach for this pool under these caps. Fall back to the
+    # best reachable return and say so, rather than loosening the caps.
+    best = result.get("max_feasible_return")
+    if best is not None:
+        print(f"  ⚠️ {result['error']} Строим портфель под {best:.1%}.")
+        result = portfolio_optimizer.optimize_mean_variance(tickers, target_return=best, **bounds)
+    return result
 
 
 def run_pipeline(args: argparse.Namespace) -> int:
     """The pipeline. Returns a process exit code."""
     tickers = load_tickers(args)
     print(f"\n🚀 ЗАПУСК СТРАТЕГИИ — активов в пуле: {len(tickers)}")
+    if not config.settings.llm_enabled:
+        print("ℹ️  LLM_API_KEY не задан: компоненты K и S не оцениваются, фундаментал берётся только из Yahoo.")
 
     valid_tickers = score_universe(tickers)
     if len(valid_tickers) < 2:
         print("\n❌ Оценить удалось менее двух активов — оптимизация невозможна.")
         return 1
 
-    print(f"\n🧠 ШАГ 2: оптимизация (цель {args.target_return:.0%})")
+    print("\n🧠 ШАГ 2: оптимизация")
     print("=" * 62)
 
-    portfolio = None
-    # Step the target down if it's unreachable, rather than retrying it verbatim.
-    for target in (args.target_return, args.target_return * 0.85, args.target_return * 0.7):
-        result = portfolio_optimizer.optimize_mean_variance(
-            valid_tickers,
-            target_return=target,
-            max_weight=args.max_weight,
-            min_weight=args.min_weight,
-        )
-        if "error" not in result:
-            portfolio = result
-            break
-        print(f"  ⚠️ {result['error']} (цель {target:.1%}) — понижаем планку")
-
-    if portfolio is None:
-        print("\n❌ Не удалось построить портфель даже при пониженных требованиях.")
+    portfolio = build_portfolio(valid_tickers, args)
+    if "error" in portfolio:
+        print(f"\n❌ {portfolio['error']}")
         return 1
 
     weights = portfolio["optimized_weights_pct"]
     ret = portfolio["achieved_portfolio_return"]
     vol = portfolio["expected_portfolio_volatility"]
 
-    print(f"\n💼 ИТОГОВЫЙ ПОРТФЕЛЬ: доходность {ret:.2%} | волатильность {vol:.2%}")
-
-    # If the solver had to relax the bounds, say so. Asking for 25% max per asset
-    # and silently getting 77% is worse than no answer.
-    requested = portfolio.get("requested_bounds")
-    applied = portfolio.get("applied_bounds")
-    if requested and applied and requested != applied:
-        print(
-            f"  ⚠️ Ограничения на веса ослаблены: запрошено "
-            f"{requested[0]:.0%}-{requested[1]:.0%}, применено {applied[0]:.0%}-{applied[1]:.0%} "
-            f"(на {len(valid_tickers)} активах исходные границы несовместимы с суммой 100%)."
-        )
+    print(f"\n💼 ИТОГОВЫЙ ПОРТФЕЛЬ: ожидаемая доходность {ret:.2%} | волатильность {vol:.2%}")
+    if "expected_portfolio_score" in portfolio:
+        print(f"   средневзвешенный PARKS: {portfolio['expected_portfolio_score']:.2f}/10")
     visualizer.draw_text_pie_chart(weights, "Распределение весов")
 
     chart_path = visualizer.save_portfolio_chart(
@@ -181,7 +176,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
     print("=" * 62)
 
     mc = monte_carlo.run_simulation(
-        mu_annual=ret,
+        mu_annual=portfolio["expected_portfolio_drift"],
         vol_annual=vol,
         years=args.years,
         n_simulations=args.simulations,
@@ -198,7 +193,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--tickers", nargs="+", help="Список тикеров через пробел")
     parser.add_argument("--tickers-file", help="Файл со списком тикеров (по одному в строке)")
+    parser.add_argument(
+        "--objective", choices=("min-risk", "max-score"), default="min-risk",
+        help="min-risk: минимум риска при целевой доходности; max-score: максимум PARKS при лимите риска",
+    )
     parser.add_argument("--target-return", type=float, default=0.14, help="Целевая доходность (0.14 = 14%%)")
+    parser.add_argument("--max-volatility", type=float, default=0.20, help="Лимит риска для max-score")
     parser.add_argument("--max-weight", type=float, default=0.25, help="Максимальная доля одного актива")
     parser.add_argument("--min-weight", type=float, default=0.0, help="Минимальная доля актива")
     parser.add_argument("--years", type=int, default=5, help="Горизонт Монте-Карло, лет")
