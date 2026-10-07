@@ -17,7 +17,6 @@ import pandas as pd
 import yfinance as yf
 
 import llm_analyzer
-import sector_config
 
 logger = logging.getLogger(__name__)
 
@@ -164,8 +163,9 @@ def fetch_company_data(ticker: str) -> dict[str, Any]:
     data: dict[str, Any] = {
         "ticker": ticker,
         "name": yahoo.get("name") or web.get("name") or ticker,
-        # Picks the normalisation band in sector_config.
-        "sector": sector_config.resolve_sector(yahoo.get("sector") or web.get("sector"), yahoo.get("industry")),
+        # The label as reported; the scorer maps it to a band in sector_config.
+        "sector": yahoo.get("sector") or web.get("sector"),
+        "industry": yahoo.get("industry"),
         "asset_type": asset_type,
         "volatility_1y": compute_annualized_volatility(ticker),
         "ai_analysis": llm_analyzer.analyze_governance_esg_risk(ticker),

@@ -1,4 +1,3 @@
-
 import React from 'react';
 
 export const Header: React.FC = () => {
@@ -8,7 +7,7 @@ export const Header: React.FC = () => {
         ESG Quant Scanner
       </h1>
       <p className="mt-4 text-lg text-neutral-300 max-w-3xl mx-auto">
-        AI-driven insights into corporate sustainability. We provide transparent, goal-oriented ESG assessments based on public data.
+        Балл PARKS по тикеру: прибыльность, рост, устойчивость, управление и ESG-профиль на шкале 0–10.
       </p>
     </header>
   );

@@ -60,6 +60,7 @@ def test_full_profile_on_default_bands():
     assert result["total_score"] == pytest.approx((7.5 + 5.0 + 5.0 + 7.0 + 5.0) / 5)
     assert result["data_coverage"] == 1.0
     assert result["reliable"] is True
+    assert result["sector_band"] == "Default"
     assert result["bucket"].endswith("(среднее качество)")
 
 
@@ -111,6 +112,18 @@ def test_sector_band_changes_the_score():
     assert normalize(0.15, **sector_config.get_norm_params("Technology", "return_on_equity")) == pytest.approx(
         10 * 0.05 / 0.30
     )
+
+
+def test_sector_without_bands_keeps_its_name_and_uses_default_bands():
+    data = {"sector": "Consumer Defensive", "industry": "Beverages", "return_on_equity": 0.15}
+    result = score_company("KO", data)
+
+    assert result["sector"] == "Consumer Defensive"
+    assert result["sector_band"] == "Default"
+    assert result["components"]["P"]["score"] == pytest.approx(5.0)
+
+    semis = score_company("NVDA", {"sector": "Technology", "industry": "Semiconductors"})
+    assert semis["sector_band"] == "Semiconductors"
 
 
 def test_sector_resolution():

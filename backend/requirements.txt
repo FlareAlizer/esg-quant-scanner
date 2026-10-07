@@ -13,5 +13,9 @@ openai>=1.30
 ddgs>=9.0
 python-dotenv>=1.0
 
+# HTTP API для фронтенда
+fastapi>=0.115
+uvicorn>=0.30
+
 # Визуализация
 matplotlib>=3.8

@@ -366,7 +366,7 @@ def analyze_governance_esg_risk(ticker: str) -> dict[str, Any]:
 
 def answer_question(profile: str, question: str) -> str | None:
     """Free-text answer about one scored asset. None when the model is unavailable."""
-    return _call_llm(
+    text = _call_llm(
         [
             {"role": "system", "content": _ASSISTANT_SYSTEM_PROMPT},
             {"role": "user", "content": f"Asset profile:\n---\n{profile}\n---\n\nQuestion: {question}"},
@@ -374,3 +374,7 @@ def answer_question(profile: str, question: str) -> str | None:
         temperature=0.3,
         want_json=False,
     )
+    if not text:
+        return None
+    # Reasoning models put their chain of thought in front of the answer.
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip() or None

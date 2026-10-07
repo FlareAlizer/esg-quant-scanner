@@ -92,10 +92,12 @@ def sustainability_score(esg_score: float, controversy_risk: float) -> float:
 
 def score_company(ticker: str, data: dict[str, Any]) -> dict[str, Any]:
     """Score an asset. Takes the dict produced by data_fetcher.fetch_company_data."""
-    sector = data.get("sector") or "Default"
+    # A sector without its own bands ("Consumer Defensive", say) is still
+    # reported under its name and scored on the Default ones.
+    band = sector_config.resolve_sector(data.get("sector"), data.get("industry"))
 
     def scored(metric: str) -> float | None:
-        return normalize(data.get(metric), **sector_config.get_norm_params(sector, metric))
+        return normalize(data.get(metric), **sector_config.get_norm_params(band, metric))
 
     components: dict[str, dict[str, Any]] = {}
     covered = requested = 0
@@ -161,7 +163,8 @@ def score_company(ticker: str, data: dict[str, Any]) -> dict[str, Any]:
     return {
         "ticker": ticker,
         "name": data.get("name", ticker),
-        "sector": sector,
+        "sector": data.get("sector") or None,
+        "sector_band": band,
         "asset_type": data.get("asset_type", "unknown"),
         "components": components,
         # None when not a single component could be scored.

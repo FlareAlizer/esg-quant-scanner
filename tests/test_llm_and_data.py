@@ -195,4 +195,4 @@ def test_complete_yahoo_profile_skips_the_llm_lookup(monkeypatch):
     monkeypatch.setattr(data_fetcher.llm_analyzer, "fetch_fundamentals_from_web", fail)
     monkeypatch.setattr(data_fetcher, "compute_annualized_volatility", lambda t: None)
 
-    assert data_fetcher.fetch_company_data("A")["sector"] == "Default"
+    assert data_fetcher.fetch_company_data("A")["sector"] is None
