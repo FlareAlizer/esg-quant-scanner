@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import List, Sequence
 
 import numpy as np
 import pandas as pd
@@ -14,14 +14,17 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+# Below this many daily observations the covariance estimate is noise.
+MIN_OBSERVATIONS = 60
+
 
 @dataclass
 class RiskModel:
     """Everything is aligned to the same ticker ordering."""
 
-    tickers: List[str]
-    cov_matrix: np.ndarray        # annual covariance, (n, n)
-    expected_returns: np.ndarray  # annual expected return, (n,)
+    tickers: list[str]
+    cov_matrix: np.ndarray        # annual covariance of log returns, (n, n)
+    expected_returns: np.ndarray  # annual arithmetic drift, (n,)
 
     @property
     def is_valid(self) -> bool:
@@ -32,12 +35,50 @@ class RiskModel:
         return len(self.tickers)
 
 
+_EMPTY = RiskModel([], np.empty((0, 0)), np.empty(0))
+
+
+def estimate_from_prices(prices: pd.DataFrame, trading_days: int | None = None) -> RiskModel:
+    """Annualised drift and covariance from a clean date x ticker price frame.
+
+    Works on daily log returns r_t = ln(P_t / P_{t-1}):
+
+        cov = sample covariance of r (ddof=1) * trading_days
+        m   = mean(r) * trading_days          annual log growth, ln(1 + CAGR)
+        mu  = m + diag(cov) / 2               arithmetic drift
+
+    Under geometric Brownian motion a log return over dt is distributed
+    N((mu - sigma^2/2) dt, sigma^2 dt), so the mean of log returns estimates
+    mu - sigma^2/2, not mu. Mean-variance needs mu: portfolio drift is linear
+    in it (w @ mu), while log growth is not linear in the weights. The
+    volatility drag is taken off once, at portfolio level, in monte_carlo.
+    """
+    trading_days = settings.trading_days if trading_days is None else trading_days
+
+    # A zero or negative price gives inf or NaN here; that is caught below.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_returns = np.log(prices / prices.shift(1)).dropna(how="any")
+        if log_returns.shape[1] < 1 or len(log_returns) < 2:
+            return _EMPTY
+
+        cov = log_returns.cov() * trading_days
+        log_growth = log_returns.mean() * trading_days
+        drift = log_growth + 0.5 * np.diag(cov.values)
+
+    if not (np.isfinite(cov.values).all() and np.isfinite(drift.values).all()):
+        logger.error("В ценах есть нули или отрицательные значения: доходности не определены")
+        return _EMPTY
+
+    tickers = [str(c) for c in cov.columns]
+    return RiskModel(tickers=tickers, cov_matrix=cov.values, expected_returns=drift.values)
+
+
 def calculate_risk_model(
     tickers: Sequence[str],
     period: str = "3y",
     min_coverage: float = 0.8,
 ) -> RiskModel:
-    """Covariance and expected returns from price history.
+    """Download prices, clean them and estimate the risk model.
 
     3 years of history is a compromise: enough observations for a stable
     covariance, still responsive to a regime change.
@@ -48,18 +89,14 @@ def calculate_risk_model(
     tickers = [t.strip().upper() for t in tickers if t and t.strip()]
     if len(tickers) < 2:
         logger.error("Нужно минимум 2 тикера, получено %d", len(tickers))
-        return RiskModel([], np.array([]), np.array([]))
+        return _EMPTY
 
     logger.info("Загрузка истории (%s) для %d тикеров", period, len(tickers))
     prices = data_fetcher.get_historical_prices(tickers, period=period)
 
     if prices.empty:
         logger.error("Не удалось загрузить исторические цены")
-        return RiskModel([], np.array([]), np.array([]))
-
-    # A single ticker arrives as a Series.
-    if isinstance(prices, pd.Series):
-        prices = prices.to_frame()
+        return _EMPTY
 
     # Drop columns with too many gaps. Requiring full coverage here would throw
     # out every ticker that IPO'd after the start of the window.
@@ -69,39 +106,17 @@ def calculate_risk_model(
     if dropped:
         logger.warning("Исключены (покрытие < %.0f%%): %s", min_coverage * 100, ", ".join(dropped))
 
-    prices = prices[kept]
+    # Fill internal gaps (local exchange holidays), then drop rows where some
+    # asset is still missing.
+    prices = prices[kept].ffill().dropna(axis=0, how="any")
 
-    # Fill internal gaps (weekends, local exchange holidays), then drop rows
-    # where some asset is still missing.
-    prices = prices.ffill().dropna(axis=0, how="any")
-
-    if prices.shape[1] < 2 or len(prices) < 60:
+    if prices.shape[1] < 2 or len(prices) < MIN_OBSERVATIONS:
         logger.error(
             "Недостаточно данных после очистки: %d активов, %d наблюдений",
             prices.shape[1], len(prices),
         )
-        return RiskModel([], np.array([]), np.array([]))
+        return _EMPTY
 
-    # Log returns are additive in time, so covariance and the 252 scaling are
-    # well defined on them.
-    log_returns = np.log(prices / prices.shift(1)).dropna()
-
-    annual_log_mean = log_returns.mean() * settings.trading_days
-    # Back to simple returns. Skipping this reads 30% log as 30% simple when it
-    # is really about 35%.
-    annual_expected_returns = np.expm1(annual_log_mean)
-
-    annual_cov = log_returns.cov() * settings.trading_days
-
-    ordered_tickers = list(annual_cov.columns)
-    logger.info(
-        "Риск-модель готова: %d активов, ковариация %s",
-        len(ordered_tickers), annual_cov.shape,
-    )
-
-    return RiskModel(
-        tickers=ordered_tickers,
-        cov_matrix=annual_cov.values,
-        # reindex keeps the order in sync with the covariance matrix.
-        expected_returns=annual_expected_returns.reindex(ordered_tickers).values,
-    )
+    model = estimate_from_prices(prices)
+    logger.info("Риск-модель готова: %d активов, %d наблюдений", model.n_assets, len(prices) - 1)
+    return model
