@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict
 
 import matplotlib
 
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 _BACKGROUND = "#1e1e1e"
 
 
-def draw_text_pie_chart(weights: Dict[str, float], title: str = "Allocation") -> None:
+def draw_text_pie_chart(weights: dict[str, float], title: str = "Allocation") -> None:
     """Horizontal bars in the console, for CI and SSH runs where nobody opens a PNG."""
     if not weights:
         print("⚠️  Нет весов для отображения.")
@@ -42,7 +41,7 @@ def draw_text_pie_chart(weights: Dict[str, float], title: str = "Allocation") ->
 
 
 def save_portfolio_chart(
-    weights: Dict[str, float],
+    weights: dict[str, float],
     filename: str | Path = "portfolio.png",
     title: str = "Portfolio Allocation",
     dpi: int = 200,

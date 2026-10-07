@@ -5,14 +5,16 @@ against sector bands rather than one absolute scale.
 
     "metric": {"min_val": X, "max_val": Y, "invert": bool}
 
-invert=True means lower is better (debt, volatility, beta).
+invert=True means lower is better (debt, volatility, beta). Ratios are fractions
+(0.15 = 15%), except debt_to_equity, which is in percent as Yahoo reports it
+(45.0 = debt is 0.45 of equity).
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
-SECTOR_NORMS: Dict[str, Dict[str, Dict[str, Any]]] = {
+SECTOR_NORMS: dict[str, dict[str, dict[str, Any]]] = {
     # Fallback when the sector is unknown or lacks a given metric.
     "Default": {
         "return_on_equity": {"min_val": 0.05, "max_val": 0.25, "invert": False},
@@ -84,7 +86,24 @@ SECTOR_NORMS: Dict[str, Dict[str, Dict[str, Any]]] = {
 }
 
 
-def get_norm_params(sector: str, metric: str) -> Dict[str, Any]:
+KNOWN_SECTORS = [name for name in SECTOR_NORMS if name != "Default"]
+
+
+def resolve_sector(sector: str | None, industry: str | None = None) -> str:
+    """Map a sector or industry label onto a key of SECTOR_NORMS.
+
+    The names follow Yahoo's sector taxonomy, plus "Semiconductors", which Yahoo
+    reports as an industry, so the industry is tried first. Anything else gets
+    the Default band.
+    """
+    by_lower = {name.lower(): name for name in KNOWN_SECTORS}
+    for label in (industry, sector):
+        if isinstance(label, str) and label.strip().lower() in by_lower:
+            return by_lower[label.strip().lower()]
+    return "Default"
+
+
+def get_norm_params(sector: str, metric: str) -> dict[str, Any]:
     """Normalisation params for a (sector, metric) pair.
 
     Falls back sector -> Default -> a neutral band. Hitting the last one means

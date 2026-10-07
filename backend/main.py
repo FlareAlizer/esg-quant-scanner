@@ -92,23 +92,18 @@ def score_universe(tickers: list[str]) -> list[str]:
 
     for ticker in tickers:
         try:
-            data = data_fetcher.fetch_company_data(ticker)
-            if not data:
-                log.warning("Нет данных для %s — пропуск", ticker)
-                continue
-
-            score = company_scorer.score_company(ticker, data)
-            portfolio_optimizer.preload_score_cache(ticker, score)
-            valid.append(ticker)
-
-            coverage = score["data_coverage"]
-            flag = "" if coverage >= 0.5 else "  ⚠️ мало данных"
-            print(
-                f"  {ticker:<14} {score['total_score']:5.2f}/10  "
-                f"[покрытие {coverage:.0%}]  {score['bucket']}{flag}"
-            )
-        except Exception as exc:
+            score = company_scorer.score_company(ticker, data_fetcher.fetch_company_data(ticker))
+        except Exception as exc:  # noqa: BLE001  whatever a data source throws, move on
             log.error("Ошибка обработки %s: %s", ticker, exc)
+            continue
+
+        portfolio_optimizer.preload_score_cache(ticker, score)
+        valid.append(ticker)
+
+        total, coverage = score["total_score"], score["data_coverage"]
+        shown = f"{total:5.2f}/10" if total is not None else "  н/д   "
+        flag = "" if coverage >= 0.5 else "  ⚠️ мало данных"
+        print(f"  {ticker:<14} {shown}  [покрытие {coverage:.0%}]  {score['bucket']}{flag}")
 
     return valid
 
@@ -137,6 +132,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
     """The pipeline. Returns a process exit code."""
     tickers = load_tickers(args)
     print(f"\n🚀 ЗАПУСК СТРАТЕГИИ — активов в пуле: {len(tickers)}")
+    if not config.settings.llm_enabled:
+        print("ℹ️  LLM_API_KEY не задан: компоненты K и S не оцениваются, фундаментал берётся только из Yahoo.")
 
     valid_tickers = score_universe(tickers)
     if len(valid_tickers) < 2:
@@ -179,7 +176,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
     print("=" * 62)
 
     mc = monte_carlo.run_simulation(
-        mu_annual=ret,
+        mu_annual=portfolio["expected_portfolio_drift"],
         vol_annual=vol,
         years=args.years,
         n_simulations=args.simulations,

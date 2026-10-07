@@ -130,3 +130,39 @@ def test_clean_weights_renormalises():
 
     assert list(cleaned) == ["A", "B"]
     assert sum(cleaned.values()) == pytest.approx(100.0, abs=0.02)
+
+
+@pytest.fixture
+def two_asset_model(monkeypatch):
+    model = risk_calculator.RiskModel(["A", "B"], np.diag([0.01, 0.09]), np.array([0.10, 0.20]))
+    monkeypatch.setattr(risk_calculator, "calculate_risk_model", lambda tickers: model)
+    return model
+
+
+def test_target_return_is_an_effective_annual_rate(two_asset_model):
+    # A 16% target means a drift of ln(1.16), reached at w_B = (ln 1.16 - 0.10) / 0.10.
+    result = po.optimize_mean_variance(["A", "B"], target_return=0.16, max_weight=1.0)
+
+    w_b = (np.log(1.16) - 0.10) / 0.10
+    assert result["optimized_weights_pct"]["B"] == pytest.approx(100 * w_b, abs=0.01)
+    assert result["achieved_portfolio_return"] == pytest.approx(0.16, abs=1e-4)
+    assert np.expm1(result["expected_portfolio_drift"]) == pytest.approx(0.16, abs=1e-4)
+
+
+def test_unreachable_target_reports_the_best_reachable_return(two_asset_model):
+    result = po.optimize_mean_variance(["A", "B"], target_return=0.50, max_weight=0.6)
+
+    best = np.expm1(0.6 * 0.20 + 0.4 * 0.10)
+    assert "недостижима" in result["error"]
+    assert result["max_feasible_return"] == pytest.approx(best)
+
+    # Asking for exactly that maximum must work and keep the 60% cap.
+    retry = po.optimize_mean_variance(["A", "B"], target_return=result["max_feasible_return"], max_weight=0.6)
+    assert retry["optimized_weights_pct"] == {"B": 60.0, "A": 40.0}
+
+
+def test_incompatible_bounds_surface_as_an_error(two_asset_model):
+    result = po.optimize_mean_variance(["A", "B"], target_return=0.05, max_weight=0.3)
+
+    assert "error" in result
+    assert "max_feasible_return" not in result

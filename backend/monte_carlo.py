@@ -61,6 +61,7 @@ def run_simulation(
     is exp(mu - sigma^2/2) - 1 and sits below mu: that gap is the volatility
     drag.
 
+    target_cagr and risk_free are effective annual rates (0.04 = 4% a year).
     target_cagr is the success threshold for the probability metric.
     seed=None takes RANDOM_SEED from the settings.
     """
@@ -108,8 +109,10 @@ def run_simulation(
     cagr = np.expm1(final_log / years)
 
     # Sharpe straight from the portfolio parameters: the simulation adds no
-    # information here, and averaging across paths biases the estimate.
-    sharpe = (mu_annual - risk_free) / vol_annual
+    # information here, and averaging across paths biases the estimate. The
+    # drift is a continuously compounded rate, so the risk-free rate is put on
+    # the same footing first.
+    sharpe = (mu_annual - np.log1p(risk_free)) / vol_annual
 
     # Sortino on simulated calendar-year returns with the risk-free rate as the
     # minimum acceptable return. Downside deviation divides by all observations

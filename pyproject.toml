@@ -3,7 +3,7 @@ testpaths = ["tests"]
 pythonpath = ["backend"]
 
 [tool.ruff]
-line-length = 110
+line-length = 116
 target-version = "py310"
 src = ["backend", "tests"]
 

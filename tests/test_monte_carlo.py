@@ -47,7 +47,9 @@ def test_single_asset_simulation_reproduces_its_historical_cagr():
 
 def test_sharpe_uses_the_risk_free_rate():
     res = monte_carlo.run_simulation(0.10, 0.20, years=1, n_simulations=100, risk_free=0.04, seed=1)
-    assert res.sharpe == pytest.approx(0.30)
+    # Both rates continuously compounded: (0.10 - ln 1.04) / 0.20
+    assert res.sharpe == pytest.approx((0.10 - math.log(1.04)) / 0.20)
+    assert res.sharpe == pytest.approx(0.3039, abs=1e-4)
 
 
 def test_drawdowns_are_losses_and_ordered():

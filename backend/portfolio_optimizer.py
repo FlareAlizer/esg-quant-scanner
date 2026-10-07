@@ -204,12 +204,18 @@ def max_score_weights(
 
 def _portfolio_stats(weights: np.ndarray, tickers: Sequence[str], risk) -> dict[str, Any]:
     """Report on the cleaned weights. On the raw ones the numbers would describe
-    a portfolio that differs from the printed one."""
+    a portfolio that differs from the printed one.
+
+    The drift w @ mu is a continuously compounded rate; the return shown to the
+    user is the matching effective annual rate exp(drift) - 1.
+    """
     cleaned = _clean_weights(weights, tickers)
     w = np.array([cleaned.get(t, 0.0) / 100 for t in tickers])
+    drift = float(w @ risk.expected_returns)
     return {
         "optimized_weights_pct": cleaned,
-        "achieved_portfolio_return": round(float(w @ risk.expected_returns), 4),
+        "expected_portfolio_drift": drift,
+        "achieved_portfolio_return": round(float(np.expm1(drift)), 4),
         "expected_portfolio_volatility": round(float(np.sqrt(w @ risk.cov_matrix @ w)), 4),
         "n_assets": len(tickers),
     }
@@ -221,7 +227,10 @@ def optimize_mean_variance(
     max_weight: float = 0.30,
     min_weight: float = 0.0,
 ) -> dict[str, Any]:
-    """Minimise volatility subject to return >= target_return.
+    """Minimise volatility subject to expected return >= target_return.
+
+    target_return is an effective annual rate (0.14 = 14% a year) and is
+    converted to a drift, ln(1 + target), for the solver.
 
     On failure returns {"error": reason}; when the target is the problem the
     dict also carries "max_feasible_return" so the caller can lower it.
@@ -236,16 +245,28 @@ def optimize_mean_variance(
         return {"error": "Нет достаточных исторических данных."}
 
     try:
-        best = max_return_under_bounds(risk.expected_returns, min_weight, max_weight)
+        best_drift = max_return_under_bounds(risk.expected_returns, min_weight, max_weight)
     except InfeasibleError as exc:
         return {"error": str(exc)}
 
+    best = float(np.expm1(best_drift))
+    if target_return > best + _TOL:
+        return {
+            "error": (
+                f"Цель {target_return:.1%} недостижима: при долях {min_weight:.0%}-{max_weight:.0%} "
+                f"максимум по пулу {best:.1%}."
+            ),
+            "max_feasible_return": best,
+        }
+
     try:
+        # min() guards the exact-maximum case against rounding in log1p/expm1.
+        target_drift = min(float(np.log1p(target_return)), best_drift)
         weights = min_variance_weights(
-            risk.cov_matrix, risk.expected_returns, target_return, min_weight, max_weight
+            risk.cov_matrix, risk.expected_returns, target_drift, min_weight, max_weight
         )
     except InfeasibleError as exc:
-        return {"error": str(exc), "max_feasible_return": best}
+        return {"error": str(exc)}
 
     return {**_portfolio_stats(weights, risk.tickers, risk), "target_return": round(target_return, 4)}
 
@@ -262,7 +283,10 @@ def optimize_by_score(
         volatility_threshold * 100, min_weight * 100, max_weight * 100,
     )
 
-    score_map = {item["ticker"]: item["total_score"] for item in _get_scored_companies(tickers)}
+    # A total built on one or two components is not a ranking signal.
+    score_map = {
+        item["ticker"]: item["total_score"] for item in _get_scored_companies(tickers) if item["reliable"]
+    }
     risk = risk_calculator.calculate_risk_model(list(score_map))
     if not risk.is_valid:
         return {"error": "Недостаточно активов с историческими данными (нужно минимум 2)."}
